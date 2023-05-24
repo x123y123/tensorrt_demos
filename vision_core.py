@@ -4,7 +4,6 @@ This script demonstrates how to do real-time object detection with
 TensorRT optimized YOLO engine.
 """
 
-
 import os
 import time
 import argparse
