@@ -25,6 +25,11 @@ from kalman import MyKalman
 WINDOW_NAME = 'TrtYOLODemo'
 VIDEO_STREAM = False
 OPEN_KALMAN = True
+sleep_time = 0.1
+p_speed = 0.2
+n_speed = -0.2
+threshold = 400
+
 
 def parse_args():
     """Parse input arguments."""
@@ -67,7 +72,6 @@ def loop_and_detect(cam, trt_yolo, conf_th, writer, vis,img_width,img_height):
         kf = MyKalman(mode = 1)
     
     connection_string = '/dev/ttyACM0'
-    sleep_time = 0.1
     drone = drone_controller(connection_string)
     drone.takeoff(0.5)
     frame_cnt = 0
@@ -76,9 +80,15 @@ def loop_and_detect(cam, trt_yolo, conf_th, writer, vis,img_width,img_height):
     fps = 0.0
     tic = time.time()
     cnt = 0
-    threshold = 400
 
-    #while detect_cnt < 100:
+    data_stamp = open("/home/uav/code/tensorrt_demos/tony/forward_time/ex1.txt", "a+")
+    
+
+    kf_save = open("/home/uav/code/tensorrt_demos/david/kf_data_0616_2.txt", "a+")
+    kf_save.write('Area vx vy dt lat lon alt pixel_w pixel_h\n')
+    kf_save.close()
+
+    #while detect_cnt < 200:
     #while frame_cnt < 100:
     while True:
         frame_start = time.time()
@@ -98,6 +108,9 @@ def loop_and_detect(cam, trt_yolo, conf_th, writer, vis,img_width,img_height):
         if (len(boxes) > 0):
             detect_cnt += 1
 
+            # calculate img center
+            img_center_w = img_width / 2
+            img_center_h = img_height / 2
             # calculate bbox center
             bb_center_w = (bb_coor[2] - bb_coor[0]) / 2 + bb_coor[0]
             bb_center_h = (bb_coor[3] - bb_coor[1]) / 2 + bb_coor[1]
@@ -107,6 +120,7 @@ def loop_and_detect(cam, trt_yolo, conf_th, writer, vis,img_width,img_height):
        
             # kalman filter
             if (OPEN_KALMAN):
+                dist = round(kf.bbox2dist(Area), 2)
                 #calc dt
                 kalman_Y = time.time()
                 dt = kalman_Y - kalman_start
@@ -114,17 +128,18 @@ def loop_and_detect(cam, trt_yolo, conf_th, writer, vis,img_width,img_height):
                 
                 #test 3D kalman
                 vel = np.array([drone.vehicle.velocity[0], drone.vehicle.velocity[1]])
-                yaw = drone.vehicle.attitude.yaw * math.pi / 180
-                data = kf.update(Area, vel, dt, yaw = yaw)
+                data = kf.update(Area, vel, dt, pixel = bb_center_w - img_center_w)
                 lat = drone.vehicle.location.global_frame.lat
                 lon = drone.vehicle.location.global_frame.lon
-                kf_save = open("/home/uav/code/tensorrt_demos/kf_data_0309_1.txt", "a+")
-                kf_save.write(str(data[0]) + ' ' + str(data[1]) + ' ' + str(data[2]) + ' ' + str(lat) + ' ' + str(lon) + '\n')
+                alt = drone.vehicle.location.global_frame.alt
+
+                #save drone state in file
+                kf_save = open("/home/uav/code/tensorrt_demos/david/kf_data_0616_1.txt", "a+")
+                kf_save.write(str(Area) + ' ' + str(vel[0]) + ' ' + str(vel[1]) + ' ' + str(dt) + ' ' + str(lat) + ' ' + str(lon) + ' ' + str(alt) + ' ' + str(bb_center_w - img_center_w) + ' ' + str(bb_center_h - img_center_h) + '\n')
                 kf_save.close()
-                print(str(data[0]) + ' ' + str(data[1]) + ' ' + str(data[2]) + ' ' + str(lat) + ' ' + str(lon) + ' ' + str(yaw) + '\n')
+                print('Data saved !')
 
                 #put area into kalman
-                dist = round(kf.bbox2dist(Area), 2)
                 text = "kalman dist: " + str(dist)
                 cv2.putText(
                             img, 
@@ -137,12 +152,12 @@ def loop_and_detect(cam, trt_yolo, conf_th, writer, vis,img_width,img_height):
                             cv2.LINE_AA
                         )
               
-            # calculate img center
-            img_center_w = img_width / 2
-            img_center_h = img_height / 2
             #draw threshold
             cv2.circle(img, (320, 240), 20, (255, 0, 0), 2)
-
+            if (dist > 100): 
+                threshold = 900
+            else:
+                threshold = 400
             if ((bb_center_h - img_center_h)**2 + (bb_center_w - img_center_w)**2) > threshold:
                 x = 0
                 if (bb_center_h < img_center_h):
@@ -157,7 +172,10 @@ def loop_and_detect(cam, trt_yolo, conf_th, writer, vis,img_width,img_height):
                             cv2.LINE_AA
                             )
                     print("move up!")
-                    z = -0.05
+                    if (dist > 50):
+                        z = n_speed
+                    else:
+                        z = n_speed + 0.03
 
                 elif (bb_center_h > img_center_h):
                     cv2.putText(
@@ -171,7 +189,10 @@ def loop_and_detect(cam, trt_yolo, conf_th, writer, vis,img_width,img_height):
                             cv2.LINE_AA
                             )
                     print("move down!")
-                    z = 0.05
+                    if (dist > 50):
+                        z = p_speed
+                    else:
+                        z = p_speed - 0.03
 
                 if (bb_center_w < img_center_w):
                     cv2.putText(
@@ -185,7 +206,10 @@ def loop_and_detect(cam, trt_yolo, conf_th, writer, vis,img_width,img_height):
                             cv2.LINE_AA
                             )
                     print("move left!")
-                    y = -0.05
+                    if (dist > 50):
+                        y = n_speed
+                    else: 
+                        y = n_speed + 0.03
 
                 elif (bb_center_w > img_center_w):
                     cv2.putText(
@@ -199,7 +223,10 @@ def loop_and_detect(cam, trt_yolo, conf_th, writer, vis,img_width,img_height):
                             cv2.LINE_AA
                             )
                     print("move right")
-                    y = 0.05
+                    if (dist > 50):
+                        y = p_speed
+                    else: 
+                        y = p_speed - 0.03
             else:
                 cv2.putText(
                             img, 
@@ -212,7 +239,10 @@ def loop_and_detect(cam, trt_yolo, conf_th, writer, vis,img_width,img_height):
                             cv2.LINE_AA
                         )
                 print("move forward")
-                x = 0.05
+                if (dist > 50):
+                    x = 0.3
+                else:
+                    x = p_speed
                 y = 0
                 z = 0
         
@@ -229,9 +259,13 @@ def loop_and_detect(cam, trt_yolo, conf_th, writer, vis,img_width,img_height):
                                 cv2.LINE_AA
                             )
                     print("move back")
-                    x = -0.15
+                    x = -0.05
                     y = 0
                     z = 0
+                    forward_end = time.time()
+                    time_data = forward_end - tic
+                    data_stamp.write(str(threshold) + ' ' + str(time_data))
+                    data_stamp.close()
 
             else:
                 if (Area > 55000):
@@ -246,7 +280,7 @@ def loop_and_detect(cam, trt_yolo, conf_th, writer, vis,img_width,img_height):
                                 cv2.LINE_AA
                             )
                     print("move back")
-                    x = -0.15
+                    x = -0.05
                     y = 0
                     z = 0
             """
@@ -300,7 +334,11 @@ def loop_and_detect(cam, trt_yolo, conf_th, writer, vis,img_width,img_height):
                     cv2.LINE_AA
                     )
         drone.move(x, y, z)
-        time.sleep(sleep_time)
+        if (x > 0):
+            time.sleep(sleep_time)
+
+        else:
+            time.sleep(sleep_time)
         cnt = cnt + 1
         writer.write(img)
         frame_end = time.time()
