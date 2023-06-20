@@ -4,7 +4,6 @@ This script demonstrates how to do real-time object detection with
 TensorRT optimized YOLO engine.
 """
 
-
 import os
 import time
 import argparse
@@ -21,15 +20,16 @@ from utils.visualization import BBoxVisualization
 from utils.yolo_with_plugins import TrtYOLO
 from control import drone_controller
 from kalman import MyKalman
+from performance_model import *
 
 WINDOW_NAME = 'TrtYOLODemo'
-VIDEO_STREAM = False
+VIDEO_STREAM = True
 OPEN_KALMAN = True
-sleep_time = 0.1
+sleep_time = 0.01
 p_speed = 0.2
 n_speed = -0.2
 threshold = 400
-
+cpu_freq = 1907200
 
 def parse_args():
     """Parse input arguments."""
@@ -71,26 +71,30 @@ def loop_and_detect(cam, trt_yolo, conf_th, writer, vis,img_width,img_height):
         kalman_start = time.time()
         kf = MyKalman(mode = 1)
     
+    
     connection_string = '/dev/ttyACM0'
     drone = drone_controller(connection_string)
-    drone.takeoff(0.5)
+    #drone.takeoff(0.5)
+    frame_perf = []
+    fps_perf = []
     frame_cnt = 0
     detect_cnt = 0
     full_scrn = False
     fps = 0.0
     tic = time.time()
+    total_power = 0.0
     cnt = 0
 
-    data_stamp = open("/home/uav/code/tensorrt_demos/tony/forward_time/ex1.txt", "a+")
+    #data_stamp = open("/home/uav/code/tensorrt_demos/tony/forward_time/ex1.txt", "a+")
     
 
-    kf_save = open("/home/uav/code/tensorrt_demos/david/kf_data_0616_2.txt", "a+")
-    kf_save.write('Area vx vy dt lat lon alt pixel_w pixel_h\n')
-    kf_save.close()
+    #kf_save = open("/home/uav/code/tensorrt_demos/david/kf_data_0616_2.txt", "a+")
+    #kf_save.write('Area vx vy dt lat lon alt pixel_w pixel_h\n')
+    #kf_save.close()
 
-    #while detect_cnt < 200:
+    while detect_cnt < 2000:
     #while frame_cnt < 100:
-    while True:
+    #while True:
         frame_start = time.time()
         
         if (VIDEO_STREAM):
@@ -134,9 +138,9 @@ def loop_and_detect(cam, trt_yolo, conf_th, writer, vis,img_width,img_height):
                 alt = drone.vehicle.location.global_frame.alt
 
                 #save drone state in file
-                kf_save = open("/home/uav/code/tensorrt_demos/david/kf_data_0616_1.txt", "a+")
-                kf_save.write(str(Area) + ' ' + str(vel[0]) + ' ' + str(vel[1]) + ' ' + str(dt) + ' ' + str(lat) + ' ' + str(lon) + ' ' + str(alt) + ' ' + str(bb_center_w - img_center_w) + ' ' + str(bb_center_h - img_center_h) + '\n')
-                kf_save.close()
+                #kf_save = open("/home/uav/code/tensorrt_demos/david/kf_data_0616_1.txt", "a+")
+                #kf_save.write(str(Area) + ' ' + str(vel[0]) + ' ' + str(vel[1]) + ' ' + str(dt) + ' ' + str(lat) + ' ' + str(lon) + ' ' + str(alt) + ' ' + str(bb_center_w - img_center_w) + ' ' + str(bb_center_h - img_center_h) + '\n')
+                #kf_save.close()
                 print('Data saved !')
 
                 #put area into kalman
@@ -264,8 +268,8 @@ def loop_and_detect(cam, trt_yolo, conf_th, writer, vis,img_width,img_height):
                     z = 0
                     forward_end = time.time()
                     time_data = forward_end - tic
-                    data_stamp.write(str(threshold) + ' ' + str(time_data))
-                    data_stamp.close()
+                    #data_stamp.write(str(threshold) + ' ' + str(time_data))
+                    #data_stamp.close()
 
             else:
                 if (Area > 55000):
@@ -283,45 +287,13 @@ def loop_and_detect(cam, trt_yolo, conf_th, writer, vis,img_width,img_height):
                     x = -0.05
                     y = 0
                     z = 0
-            """
-            depth = 0
-            if (h_index < 400 and w_index < 400):
-                if (Area > 7):
-                    x = -0.05
-                    
-                    #drone.move_backward()
-                    f = open("/home/uav/code/tensorrt_demos/depth.txt", "r")
-                    depth_str = f.read()
-                    f.close()
-                    try:
-                        depth = int(depth_str)
-                    except ValueError:
-                        print("some_variable did not contain a number!")
-                    if (depth < 30):
-                        print("[stereo] move back")
-                        x = -0.05
-                    else:
-                        print("\033[32m [stereo] \033[0m move forward")
-                        x = 0.05
-                    
-                    
-                elif (Area < 7):
-                    #drone.move_forward()
-                    x = 0.05
-            """
         else:
             print("\033[31m No object detect \033[0m")
             x = 0
             y = 0
             z = 0
-        """
-        if (cnt == 5):
-            drone.move(x, y, z)
-            #time.sleep(sleep_time)
-            cnt = 0
-            #print("move")
-        """
-        
+       
+        # print velocity message on img
         v_value = "[" + str(x) + ", " + str(y) + ", " + str(z) + "]"
         cv2.putText(
                     img, 
@@ -333,31 +305,16 @@ def loop_and_detect(cam, trt_yolo, conf_th, writer, vis,img_width,img_height):
                     1, 
                     cv2.LINE_AA
                     )
-        drone.move(x, y, z)
-        if (x > 0):
-            time.sleep(sleep_time)
+        #drone.move(x, y, z)
+        #time.sleep(sleep_time)
+        total_power += (read_power() * sleep_time)
 
-        else:
-            time.sleep(sleep_time)
         cnt = cnt + 1
         writer.write(img)
         frame_end = time.time()
         frame_time = frame_end - frame_start
         print(f"per frame:{frame_time}")
-        #t = open("/home/uav/code/tensorrt_demos/tony/dvfs_data/static_power/object/1core.txt", "a+")
-        #t.write(str(frame_cnt) + " " + str(frame_time))
-        #t.write("\n")
-        #c = open("/sys/bus/i2c/drivers/ina3221/7-0040/hwmon/hwmon5/curr2_input", "r")
-        #current = int(c.read())
-        #c.close()
-        #v = open("/sys/bus/i2c/drivers/ina3221/7-0040/hwmon/hwmon5/in2_input", "r")
-        #voltage = int(v.read())
-        #v.close()
-        #power = current * voltage / 1000000
-        #w = open("/home/uav/code/tensorrt_demos/tony/dvfs_data/static_power/nonobject/power.txt", "a+")
-        #w.write(str(frame_cnt) + " " + str(power))
-        #w.write("\n")
-
+        frame_perf.append(frame_time)
         
         if (VIDEO_STREAM):
             img = show_fps(img, fps)
@@ -365,8 +322,8 @@ def loop_and_detect(cam, trt_yolo, conf_th, writer, vis,img_width,img_height):
             toc = time.time()
             curr_fps = 1.0 / (toc - tic)
             # calculate an exponentially decaying average of fps number
-            #fps = curr_fps if fps == 0.0 else (fps*0.95 + curr_fps*0.05)
-            fps = curr_fps
+            fps = curr_fps if fps == 0.0 else (fps*0.95 + curr_fps*0.05)
+            #fps = curr_fps
             tic = toc             
             key = cv2.waitKey(1)
             if key == 27:  # ESC key: quit program
@@ -374,8 +331,13 @@ def loop_and_detect(cam, trt_yolo, conf_th, writer, vis,img_width,img_height):
             elif key == ord('F') or key == ord('f'):  # Toggle fullscreen
                 full_scrn = not full_scrn
                 set_display(WINDOW_NAME, full_scrn)
-        
-        frame_cnt = frame_cnt + 1 
+            fps_perf.append(fps)
+            
+        frame_cnt = frame_cnt + 1
+    
+    p_file = open("/home/uav/code/tensorrt_demos/tony/power/total.txt", "a+")
+    p_file.write(str(cpu_freq) + ' ' + str(total_power) + ' ' + str(sum(frame_perf)/len(frame_perf)) + ' ' + str(sum(fps_perf)/len(fps_perf)) + '\n')
+    print(f"total power:{total_power}")
         
 
 def main():
@@ -410,9 +372,10 @@ def main():
         open_window(
             	WINDOW_NAME, 
             	'Camera TensorRT YOLO Demo',
-            	cam.img_width, cam.img_height
-            	)
+                cam.img_width, cam.img_height
+                )
     
+    set_freq(cpu_freq)
     loop_and_detect(
             cam,trt_yolo,
             args.conf_thresh,
