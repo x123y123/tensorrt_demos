@@ -26,18 +26,44 @@ WINDOW_NAME = 'TrtYOLODemo'
 REAL_FLY = True
 PUT_TEXT = False
 VIDEO_STREAM = False
-OPEN_KALMAN = True
-SAVE_KF = False
-POWER_RECORD = True
 x_speed = 0
 y_speed = 0
 z_speed = 0
-x = 0
-y = 0
-z = 0
+# pd parameters, index 0 for y, index 1 for z
+kp = [0.000833, 0.000625]
+kd = [0.000030, 0.000020]
+pre_dw = 0.0
+pre_dh = 0.0
 sleep_time = 0.01
 threshold = 2500
 cpu_freq = 1907200
+
+def bbox2dist(bbox) -> float:
+    n = 3.180226752
+    l0 = 1903.809012
+
+    return (n * (l0 / (bbox ** 0.5) - 1))
+
+def check_limit(value) -> float:
+    if (value > 0.3):
+        value = 0.3
+    elif (value < -0.3):
+        value = -0.3
+
+    return value
+
+def print_move_in_video(img, move: str, spot = (10, 400)):
+    cv2.putText(
+            img, 
+            move, 
+            spot, 
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1, 
+            (0, 255, 0), 
+            1, 
+            cv2.LINE_AA
+            )
+    return
 
 def parse_args():
     """Parse input arguments."""
@@ -74,51 +100,27 @@ def loop_and_detect(cam, trt_yolo, conf_th, writer, vis,img_width,img_height):
       conf_th: confidence/score threshold for object detection.
       vis: for visualization.
     """
-    
-    if (OPEN_KALMAN):
-        kalman_start = time.time()
-        kf = MyKalman(mode = 1)
-    
-    
     connection_string = '/dev/ttyACM0'
-    connect_time_s = time.time()
     drone = drone_controller(connection_string)
-    connect_time_e = time.time()
-    connect_time = connect_time_e - connect_time_s
     
     if (REAL_FLY):
         drone.takeoff(1.25)
     
-    frame_perf = []
-    sleep_perf = []
     fps_perf = []
-    frame_cnt = 0
-    detect_cnt = 0
     full_scrn = False
     fps = 0.0
     tic = time.time()
-    total_power = 0.0
-    cnt = 0
     total_time_s = time.time()
-
-    #data_stamp = open("/home/uav/code/tensorrt_demos/tony/forward_time/ex1.txt", "a+")
     
-    if (SAVE_KF):
-        kf_save = open("/home/uav/code/tensorrt_demos/david/kf_data_0630_1.txt", "a+")
-        kf_save.write('Area vx vy dt lat lon pixel_w yaw\n')
-        kf_save.close()
-
-    #while detect_cnt < 2000:
-    #while frame_cnt < 100:
     while True:
         global threshold
-        global x
-        global y
-        global z
         global x_speed
         global y_speed
-        
-        frame_start = time.time()
+        global z_speed
+        global kp
+        global kd
+        global pre_dw
+        global pre_dh
         
         if (VIDEO_STREAM):
             if cv2.getWindowProperty(WINDOW_NAME, 0) < 0:
@@ -135,7 +137,6 @@ def loop_and_detect(cam, trt_yolo, conf_th, writer, vis,img_width,img_height):
 
         
         if (len(boxes) > 0):
-            detect_cnt += 1
 
             # calculate img center
             img_center_w = img_width / 2
@@ -143,267 +144,111 @@ def loop_and_detect(cam, trt_yolo, conf_th, writer, vis,img_width,img_height):
             # calculate bbox center
             bb_center_w = (bb_coor[2] - bb_coor[0]) / 2 + bb_coor[0]
             bb_center_h = (bb_coor[3] - bb_coor[1]) / 2 + bb_coor[1]
+            dw = bb_center_w - img_center_w
+            dh = bb_center_h - img_center_h
             Area = (bb_coor[2] - bb_coor[0]) * (bb_coor[3] - bb_coor[1])
             #Area = Area / 100000
             print(f"Area: {Area}")
-       
-            # kalman filter
-            if (OPEN_KALMAN):
-                dist = round(kf.bbox2dist(Area), 2)
-                """
-                #calc dt
-                kalman_Y = time.time()
-                dt = kalman_Y - kalman_start
-                kalman_start = kalman_Y
-                
-                #test 3D kalman
-                vel = np.array([drone.vehicle.velocity[0], drone.vehicle.velocity[1]])
-                data = kf.update(Area, vel, dt, pixel = bb_center_w - img_center_w)
-                print('mango coor: x: ' + str(data[1]) + ' y: ' + str(data[2]) + '\n')
-                """
-                #save drone state in file
-                if (SAVE_KF):
-                    lat = drone.vehicle.location.global_frame.lat
-                    lon = drone.vehicle.location.global_frame.lon
-                    yaw = drone.vehicle.attitude.yaw
-                    kf_save = open("/home/uav/code/tensorrt_demos/david/kf_data_0630_1.txt", "a+")
-                    kf_save.write(str(Area) + ' ' + str(vel[0]) + ' ' + str(vel[1]) + ' ' + str(dt) + ' ' + str(lat) + ' ' + str(lon) + ' ' + str(bb_center_w - img_center_w) + ' ' + str(yaw) + '\n')
-                    kf_save.close()
-                    print('Data saved !')
-                
-                #put area into kalman
-                if (PUT_TEXT):
-                    text = "kalman dist: " + str(dist)
-                    cv2.putText(
-                                img, 
-                                text, 
-                                (0, 320), 
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                1, 
-                                (0, 255, 255), 
-                                1, 
-                                cv2.LINE_AA
-                            )
+            dist = round(bbox2dist(Area), 2)
+            print(f"Dist: {dist}")
+
+            # test PD controller ===============================================
+            y_speed = kp[0] * dw + kd[0] * (dw - pre_dw)
+            z_speed = kp[1] * dh + kd[1] * (dh - pre_dh)
+            y_speed = round(check_limit(y_speed), 2)
+            z_speed = round(check_limit(z_speed), 2)
+
+            pre_dw = dw
+            pre_dh = dh
+
+            # ==================================================================
+            
             if (dist > 150): 
                 threshold = 8100
-                x_speed = 0.2
-                y_speed = 0.09
-                z_speed = 0.095
+                x_speed = 0.25
 
             elif (dist <= 150 and dist > 130):
                 threshold = 6400
-                x_speed = 0.2
-                y_speed = 0.09
-                z_speed = 0.095
+                x_speed = 0.25
 
             elif (dist <= 130 and dist > 110):
                 threshold = 6400
-                x_speed = 0.2
-                y_speed = 0.09
-                z_speed = 0.095
+                x_speed = 0.25
 
             elif (dist <= 110 and dist > 90):
                 threshold = 4900
                 x_speed = 0.2
-                y_speed = 0.08
-                z_speed = 0.085
 
             elif (dist <= 90 and dist > 70):
                 threshold = 4900
                 x_speed = 0.2
-                y_speed = 0.08
-                z_speed = 0.085
 
             elif (dist <= 70 and dist > 40):
                 threshold = 3600
                 x_speed = 0.2
-                y_speed = 0.07
-                z_speed = 0.075
 
             else:
                 threshold = 1600
                 x_speed = 0.2
-                y_speed = 0.06
-                z_speed = 0.065
 
             if (VIDEO_STREAM):
                 #draw threshold
                 cv2.circle(img, (320, 240), int(threshold**0.5), (255, 0, 0), 2)
             
+            if (dh > 0):
+                print_move_in_video(img, "down")
+                print("move down")
+            else:
+                print_move_in_video(img, "up")
+                print("move up")
+            if (dw > 0):
+                print_move_in_video(img, "right", spot = (10, 430))
+                print("move right")
+            else:
+                print_move_in_video(img, "left", spot = (10, 430))
+                print("move left")
             
-            if ((bb_center_h - img_center_h)**2 + (bb_center_w - img_center_w)**2) > threshold:
+            if (dist < 25):     # modify 25~20
+                print_move_in_video(img, "move backward", spot = (10, 460))
+                print("move back")
+                x = -0.05
+                y_speed = 0
+                z_speed = 0
+            elif (dh**2 + dw**2) < threshold:
+                print_move_in_video(img, "move forward", spot = (10, 460))
+                print("move forward")
+                x = x_speed 
+            else:
                 x = 0
-                if (bb_center_h < img_center_h):
-                    if (PUT_TEXT):
-                        cv2.putText(
-                                img, 
-                                "move up", 
-                                (0, 360), 
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                1, 
-                                (0, 255, 255), 
-                                1, 
-                                cv2.LINE_AA
-                                )
-                    print("move up!")
-                    z = -z_speed
-
-                elif (bb_center_h > img_center_h):
-                    if (PUT_TEXT):
-                        cv2.putText(
-                                img, 
-                                "move down", 
-                                (0, 360), 
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                1, 
-                                (0, 255, 255), 
-                                1, 
-                                cv2.LINE_AA
-                                )
-                    print("move down!")
-                    z = z_speed
-
-                if (bb_center_w < img_center_w):
-                    if (PUT_TEXT):
-                        cv2.putText(
-                                img, 
-                                "move left", 
-                                (0, 400), 
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                1, 
-                                (0, 255, 255), 
-                                1, 
-                                cv2.LINE_AA
-                                )
-                    print("move left!")
-                    y = -y_speed
-
-                elif (bb_center_w > img_center_w):
-                    if (PUT_TEXT):
-                        cv2.putText(
-                                img, 
-                                "move right", 
-                                (0, 400), 
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                1, 
-                                (0, 255, 255), 
-                                1, 
-                                cv2.LINE_AA
-                                )
-                    print("move right")
-                    y = y_speed
-            else:
-                if (bb_center_h > img_center_h):
-                    if (PUT_TEXT):
-                        cv2.putText(
-                                img, 
-                                "move down", 
-                                (0, 360), 
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                1, 
-                                (0, 255, 255), 
-                                1, 
-                                cv2.LINE_AA
-                                )
-                    print("move down!")
-                    z = z_speed
-                else:
-                    if (PUT_TEXT):
-                        cv2.putText(
-                                    img, 
-                                    "move forward", 
-                                    (0, 440), 
-                                    cv2.FONT_HERSHEY_SIMPLEX,
-                                    1, 
-                                    (0, 255, 255), 
-                                    1, 
-                                    cv2.LINE_AA
-            
-                                )
-                    print("move forward")
-                    x = x_speed 
-                    y = 0
-                    z = 0
         
-            if (OPEN_KALMAN):
-                if (dist < 25):     # modify 25~20
-                    if (PUT_TEXT):
-                        cv2.putText(
-                                    img, 
-                                    "move backward", 
-                                    (0, 440), 
-                                    cv2.FONT_HERSHEY_SIMPLEX,
-                                    1, 
-                                    (0, 255, 255), 
-                                    1, 
-                                    cv2.LINE_AA
-                                )
-                    print("move back")
-                    x = -0.05
-                    y = 0
-                    z = 0
-                    forward_end = time.time()
-                    time_data = forward_end - tic
-                    #data_stamp.write(str(threshold) + ' ' + str(time_data))
-                    #data_stamp.close()
-
-            else:
-                if (Area > 55000):
-                    if (PUT_TEXT):
-                        cv2.putText(
-                                    img, 
-                                    "move backward", 
-                                    (0, 440), 
-                                    cv2.FONT_HERSHEY_SIMPLEX,
-                                    1, 
-                                    (0, 255, 255), 
-                                    1, 
-                                    cv2.LINE_AA
-                                )
-                    print("move back")
-                    x = -0.05
-                    y = 0
-                    z = 0
         else:
             print("\033[31m No object detect \033[0m")
             x = -0.05
             y = 0
             z = 0
-       
-            
-        # print velocity message on img
-        v_value = "[" + str(x) + ", " + str(y) + ", " + str(z) + "]"
+
+        v_text = "[x: " + str(x) + " , y: " + str(y_speed) + " , z: " + str(z_speed) + "]"
         if (PUT_TEXT):
             cv2.putText(
-                        img, 
-                        v_value, 
-                        (0, 280), 
+                        img,
+                        v_text,
+                        (0, 280),
                         cv2.FONT_HERSHEY_SIMPLEX,
-                        1, 
-                        (0, 255, 255), 
-                        1, 
+                        1,
+                        (0, 255, 0),
+                        1,
                         cv2.LINE_AA
                         )
+            
+        # print velocity message on img
         if (REAL_FLY):
-            drone.move(x, y, z)
+            drone.move(x, y_speed, z_speed)
         
-        print(f"x: {x} y: {y} z: {z}")
+        print(f"x: {x} y: {y_speed} z: {z_speed}")
         
-        #test sleep time
-        sleep_s = time.time()
         time.sleep(sleep_time)
-        sleep_e = time.time()
-        sleep_b = sleep_e - sleep_s
-        sleep_perf.append(sleep_b)
 
-        total_power += (read_power() * sleep_time)
-
-        cnt = cnt + 1
         writer.write(img)
-        frame_end = time.time()
-        frame_time = frame_end - frame_start
-        print(f"per frame:{frame_time}")
-        frame_perf.append(frame_time)
         
         if (VIDEO_STREAM):
             img = show_fps(img, fps)
@@ -421,20 +266,6 @@ def loop_and_detect(cam, trt_yolo, conf_th, writer, vis,img_width,img_height):
                 full_scrn = not full_scrn
                 set_display(WINDOW_NAME, full_scrn)
             fps_perf.append(fps)
-            
-        frame_cnt = frame_cnt + 1
-
-    total_time_e = time.time()
-    total_time = total_time_e - total_time_s
-    if(POWER_RECORD):
-        r_cpu_freq = open("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq", "r")
-        cfreq = int(r_cpu_freq.read())
-
-        p_file = open("/home/uav/code/tensorrt_demos/tony/power/total.txt", "a+")
-#        p_file.write(str(cfreq) + ' ' + str(total_power) + ' ' + str(sum(frame_perf)/len(frame_perf)) + ' ' + str(sum(sleep_perf)/len(sleep_perf)) + ' ' + str(sum(fps_perf)/len(fps_perf)) + ' ' + str(total_time) + ' ' + str(connect_time) + ' ' + str(frame_cnt) + '\n')
-        p_file.write(str(cfreq) + ' ' + str(total_power) + ' ' + str(sum(frame_perf)/len(frame_perf)) + ' ' + str(sum(sleep_perf)/len(sleep_perf)) + ' ' + str(total_time) + ' ' + str(connect_time) + ' ' + str(frame_cnt) + '\n')
-    print(f"total power:{total_power}")
-        
 
 def main():
     
